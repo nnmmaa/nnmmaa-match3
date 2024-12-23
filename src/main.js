@@ -1,11 +1,11 @@
-import Phaser from 'phaser';
+import { AUTO, Game } from 'phaser';
 import GameScene from './scenes/GameScene';
 
 const config = {
-    type: Phaser.AUTO,
+    type: AUTO,
     width: 480,
     height: 800,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#FFF',
     parent: 'game-container',
     scene: [GameScene],
     scale: {
@@ -14,4 +14,4 @@ const config = {
     },
 };
 
-const game = new Phaser.Game(config);
+const game = new Game(config);

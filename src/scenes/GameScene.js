@@ -1,163 +1,303 @@
-import Phaser from 'phaser';
-import Diamond from '../objects/Diamond.js';
-import Grid from '../objects/Grid.js';
-import MatchManager from '../managers/MatchManager.js';
+import Grid from "../objects/Grid.js";
+import Diamond from "../objects/Diamond.js";
+import Bomb from "../objects/Bomb.js";
+import MatchManager from "../managers/MatchManager.js";
+import EffectsManager from "../managers/EffectsManager.js";
+import BoardManager from "../managers/BoardManager.js";
+import { GAME_CONFIG } from "../config.js";
+
 import bg from '../assets/images/sky.png';
+import diamonds from '../assets/images/diamonds.png';
+import blocks from '../assets/images/blocks.png';
+import blocksJson from '../assets/images/blocks.json';
 import matchImg from '../assets/images/match3.png';
 import matchJson from '../assets/images/match3.json';
-import diamondsImage from '../assets/images/diamonds.png';
-import kyobiMP3 from '../assets/audio/kyobi.mp3';
+import explosionImage from '../assets/images/explosion.png';
+import nineSlice from '../assets/images/nine-slice.png';
+import nineSliceJson from '../assets/images/nine-slice.json';
+
 import kyobiOGG from '../assets/audio/kyobi.ogg';
 import kyobiM4A from '../assets/audio/kyobi.m4a';
 import kyobiJson from '../assets/audio/kyobi.json';
 
+
+/**
+ * GameScene отвечает за основную логику игровой сцены:
+ * - Инициализация MRAID (если доступен)
+ * - Запуск игры (startGame)
+ * - Создание и обновление сетки (createTiles)
+ * - Обработка завершения уровня (levelCompleted)
+ * - Управление вводом (перетаскивание кристаллов)
+ */
 export default class GameScene extends Phaser.Scene {
     constructor() {
         super('GameScene');
-        this.isProcessing = false; // Флаг для контроля взаимодействия
         this.matchManager = null;
+        this.isProcessing = false;
+        this.score = 0;
+        this.gridArray = [];
+        this.targetScore = 300;
+
+        this.Diamond = Diamond;
     }
 
     preload() {
         this.load.image('bg', bg);
         this.load.atlas('coin', matchImg, matchJson);
-        this.load.spritesheet('diamonds', diamondsImage, {
+        this.load.atlas('buttons', nineSlice, nineSliceJson);
+        this.load.spritesheet('diamonds', diamonds, {
             frameWidth: 32,
             frameHeight: 24,
         });
-        this.load.audioSprite('kyobi', kyobiJson, [kyobiOGG, kyobiMP3, kyobiM4A]);
+        this.load.atlas('blocks', blocks, blocksJson);
+        this.load.spritesheet('explosion', explosionImage, {
+            frameWidth: 64,
+            frameHeight: 64
+        });
+
+        this.load.audioSprite('kyobi', kyobiJson, [kyobiOGG, kyobiM4A]);
     }
 
     create() {
-        this.add.image(0, 0, 'bg').setOrigin(0);
+        // Проверка и инициализация MRAID если доступен
+        if (typeof mraid !== 'undefined') {
+            if (mraid.getState() === 'loading') {
+                mraid.addEventListener('ready', () => {
+                    this.startGame();
+                });
+            } else {
+                this.startGame();
+            }
+        } else {
+            // Если MRAID нет, просто запускаем игру
+            this.startGame();
+        }
+    }
 
-        const backgroundMusic = this.sound.addAudioSprite('kyobi');
-        backgroundMusic.play('title', {
+    /**
+     * startGame - Основная инициализация игрового процесса:
+     * - Создание фона
+     * - Запуск фоновой музыки
+     * - Настройка сетки и создание тайлов
+     * - Настройка обработчиков ввода
+     */
+    startGame() {
+        this.add.image(0, 0, 'bg').setOrigin(0, 0);
+
+        // Фоновая музыка
+        this.backgroundMusic = this.sound.addAudioSprite('kyobi');
+        this.backgroundMusic.play(GAME_CONFIG.AUDIO.BACKGROUND_TRACK, {
             loop: true,
-            volume: 0.1,
+            volume: GAME_CONFIG.AUDIO.MUSIC_VOLUME,
         });
 
-        const removeSound = this.sound.addAudioSprite('kyobi');
-
-        // Параметры сетки
-        this.tileSize = 40;
-        this.rows = 8;
-        this.cols = 10;
+        // Настройки поля
+        this.tileSize = GAME_CONFIG.TILE_SIZE;
+        this.rows = GAME_CONFIG.ROWS;
+        this.cols = GAME_CONFIG.COLS;
         this.gridX = (this.sys.game.config.width - this.cols * this.tileSize) / 2;
-        this.gridY = 150;
+        this.gridY = GAME_CONFIG.START_Y;
 
-        // Создание сетки
+        // Создаем сетку
         this.grid = new Grid(this, {
             tileSize: this.tileSize,
             rows: this.rows,
             cols: this.cols,
             x: this.gridX,
             y: this.gridY,
-            lineColor: 0x00ff00,
-            lineAlpha: 0.5,
+            lineColor: GAME_CONFIG.GRID_LINE_COLOR,
+            lineAlpha: GAME_CONFIG.GRID_LINE_ALPHA,
         });
 
-        // Заполнение сетки кристаллами
-        this.createDiamonds(removeSound);
+        // Отображение очков
+        this.scoreText = this.add.text(10, 10, 'Счёт: 0', {fontSize: '20px', fill: '#fff'});
+
+        // Анимация взрыва
+        this.anims.create({
+            key: 'explode',
+            frames: this.anims.generateFrameNumbers('explosion', { start: 0, end: 22 }),
+            frameRate: 60,
+            repeat: 0,
+        });
+
+        // Инициализация менеджера эффектов
+        this.effectsManager = new EffectsManager(this);
+        this.boardManager = new BoardManager(this);
+
+        // Создаем начальные тайлы
+        this.createTiles();
 
         // Обработчики перетаскивания
         this.input.on('dragstart', this.onDragStart, this);
         this.input.on('drag', this.onDrag, this);
         this.input.on('dragend', this.onDragEnd, this);
-
-        this.matches = [];
-        this.score = 0;
-
-        this.scoreText = this.add.text(20, 20, 'Счет: 0', {
-            fontFamily: 'Arial',
-            fontSize: '24px',
-            color: '#ffffff',
-            stroke: '#000000',
-            strokeThickness: 2,
-        });
-
-        const installButton = this.add
-            .text(
-                this.sys.game.config.width / 2,
-                this.sys.game.config.height - 50,
-                'Установить полную версию',
-                {
-                    fontSize: '20px',
-                    color: '#ffffff',
-                    backgroundColor: '#ff0000',
-                    padding: { x: 10, y: 5 },
-                    align: 'center',
-                }
-            )
-            .setOrigin(0.5);
-
-        installButton.setInteractive();
-        installButton.on('pointerdown', () => {
-            this.installFullVersion();
-        });
     }
 
-    installFullVersion() {
-        const url = 'https://link-to-full-game.com'; // Замените на реальный URL
-        if (window.mraid) {
-            mraid.open(url);
-        } else {
-            window.open(url, '_blank');
-        }
-    }
+    /**
+     * createTiles - Создает изначальный набор тайлов на игровом поле.
+     */
+    createTiles() {
+        this.gridArray = [];
 
-    createDiamonds(removeSound) {
-        this.diamonds = [];
         for (let row = 0; row < this.rows; row++) {
-            this.diamonds[row] = [];
+            this.gridArray[row] = [];
             for (let col = 0; col < this.cols; col++) {
                 const x = this.gridX + col * this.tileSize + this.tileSize / 2;
                 const y = this.gridY + row * this.tileSize + this.tileSize / 2;
 
-                const possibleFrames = [0, 1, 2, 3, 4];
-                if (col >= 2) {
-                    const frame1 = this.diamonds[row][col - 1].frame.name;
-                    const frame2 = this.diamonds[row][col - 2].frame.name;
-                    if (frame1 === frame2) {
-                        const index = possibleFrames.indexOf(frame1);
-                        if (index !== -1) {
-                            possibleFrames.splice(index, 1);
-                        }
-                    }
-                }
-
-                if (row >= 2) {
-                    const frame1 = this.diamonds[row - 1][col].frame.name;
-                    const frame2 = this.diamonds[row - 2][col].frame.name;
-                    if (frame1 === frame2) {
-                        const index = possibleFrames.indexOf(frame1);
-                        if (index !== -1) {
-                            possibleFrames.splice(index, 1);
-                        }
-                    }
-                }
-
-                const frame = Phaser.Utils.Array.GetRandom(possibleFrames);
+                const frame = this.getRandomFrame(row, col);
                 const diamond = new Diamond(this, x, y, frame, row, col);
-
-                this.diamonds[row][col] = diamond;
+                this.gridArray[row][col] = diamond;
             }
         }
 
-        this.matchManager = new MatchManager(this, this.diamonds, removeSound);
+        // Инициализация MatchManager для обработки совпадений
+        this.matchManager = new MatchManager(this, this.gridArray);
         if (this.matchManager.checkMatches()) {
             this.matchManager.handleMatches();
         }
     }
 
+    /**
+     * checkAndRemoveFrame - Вспомогательный метод для удаления неподходящего кадра из списка
+     * учитывая уже расположенные тайлы, чтобы не образовывать совпадение сразу.
+     */
+    checkAndRemoveFrame(row1, col1, row2, col2, possibleFrames) {
+        const tile1 = this.gridArray[row1][col1];
+        const tile2 = this.gridArray[row2][col2];
+
+        if (
+            tile1 && tile2 &&
+            tile1.canMatch && tile2.canMatch &&
+            tile1.frame.name === tile2.frame.name
+        ) {
+            const frameToAvoid = tile1.frame.name;
+            const index = possibleFrames.indexOf(parseInt(frameToAvoid));
+            if (index !== -1) {
+                possibleFrames.splice(index, 1);
+            }
+        }
+    }
+
+    /**
+     * getRandomFrame - Получает случайный кадр (тип кристалла) для тайла, избегая немедленных совпадений.
+     */
+    getRandomFrame(row, col) {
+        const possibleFrames = [0, 1, 2, 3, 4];
+
+        if (col >= 2) {
+            this.checkAndRemoveFrame(row, col - 1, row, col - 2, possibleFrames);
+        }
+
+        if (row >= 2) {
+            this.checkAndRemoveFrame(row - 1, col, row - 2, col, possibleFrames);
+        }
+
+        return Phaser.Utils.Array.GetRandom(possibleFrames);
+    }
+
+    /**
+     * levelCompleted - Метод вызывается при достижении целевого счета.
+     * Очищает поле, затем спавнит новые кристаллы, затем затемняет экран и показывает CTA.
+     */
+    levelCompleted() {
+        this.gridArray.forEach(row => {
+            row.forEach(tile => {
+                if (tile) {
+                    tile.disableInteractive();
+                }
+            });
+        });
+
+        this.boardManager.removeAllCrystals(() => {
+            this.boardManager.spawnNewCrystals(() => {
+                this.createOverlay();
+                this.showCTA();
+            });
+        });
+    }
+
+
+    /**
+     * createOverlay - Создает полупрозрачный оверлей поверх игры.
+     */
+    createOverlay() {
+        const overlay = this.add.rectangle(
+            this.sys.game.config.width / 2,
+            this.sys.game.config.height / 2,
+            this.sys.game.config.width,
+            this.sys.game.config.height,
+            0x000000,
+            0.5
+        ).setDepth(10);
+
+        this.overlay = overlay;
+    }
+
+    /**
+     * showCTA - Показывает CTA для установки полной версии игры
+     * с кликом по которому открывается ссылка (через mraid.open или window.open).
+     */
+    showCTA() {
+        const buttonX = this.sys.game.config.width / 2;
+        const buttonY = this.sys.game.config.height / 2.5;
+
+        // Создаём фоновый Nine-Slice для кнопки
+        const buttonBg = this.add.nineslice(
+            buttonX, buttonY,
+            'buttons', 'YellowButtonSml',
+            252, 60,
+            16, 16
+        ).setOrigin(0.5).setDepth(11);
+
+        // Добавляем текст поверх кнопки
+        const buttonText = this.add.text(buttonX, buttonY, 'Установить', {
+            fontSize: '24px',
+            color: '#ffffff',
+            fontStyle: 'bold'
+        }).setOrigin(0.5).setDepth(11);
+
+        // Делаем кнопку интерактивной
+        buttonBg.setInteractive();
+
+        // Обработчик нажатия
+        buttonBg.on('pointerdown', () => {
+            if (typeof mraid !== 'undefined') {
+                mraid.open('https://example.com/install');
+            } else {
+                window.open('https://example.com/install', '_blank');
+            }
+        });
+
+        // Настраиваем визуальный отклик на нажатие
+        buttonBg.on('pointerover', () => {
+            buttonBg.setTint(0xcccccc); // Меняем цвет при наведении
+        });
+
+        buttonBg.on('pointerout', () => {
+            buttonBg.clearTint(); // Возвращаем оригинальный цвет
+        });
+    }
+
+    /**
+     * Методы onDragStart, onDrag, onDragEnd, swapTiles, resetTilePosition
+     * отвечают за механику перетаскивания кристаллов и их перемещения.
+     */
     onDragStart(pointer, gameObject) {
         if (this.isProcessing) return;
+        if (!gameObject.isMovable || !gameObject.input.enabled) return;
+
         gameObject.startX = gameObject.x;
         gameObject.startY = gameObject.y;
+
+        if (gameObject instanceof Diamond) {
+            gameObject.setScale(1.3);
+        }
     }
 
     onDrag(pointer, gameObject, dragX, dragY) {
         if (this.isProcessing) return;
+        if (!gameObject.isMovable) return;
 
         const startX = gameObject.startX;
         const startY = gameObject.startY;
@@ -165,7 +305,9 @@ export default class GameScene extends Phaser.Scene {
         const deltaY = dragY - startY;
         const maxDelta = this.tileSize;
 
+        // Ограничиваем перетаскивание только на одну клетку
         if (Math.abs(deltaX) > Math.abs(deltaY)) {
+            // Горизонтально
             if (deltaX > 0) {
                 gameObject.x = Math.min(startX + maxDelta, dragX);
             } else {
@@ -173,6 +315,7 @@ export default class GameScene extends Phaser.Scene {
             }
             gameObject.y = startY;
         } else {
+            // Вертикально
             if (deltaY > 0) {
                 gameObject.y = Math.min(startY + maxDelta, dragY);
             } else {
@@ -185,10 +328,15 @@ export default class GameScene extends Phaser.Scene {
     onDragEnd(pointer, gameObject) {
         if (this.isProcessing) return;
 
+        if (gameObject instanceof Diamond) {
+            gameObject.setScale(1);
+        }
+
         const deltaX = gameObject.x - gameObject.startX;
         const deltaY = gameObject.y - gameObject.startY;
         let direction = null;
 
+        // Определяем направление сдвига
         if (Math.abs(deltaX) > Math.abs(deltaY)) {
             if (deltaX > this.tileSize / 2) {
                 direction = 'right';
@@ -210,15 +358,27 @@ export default class GameScene extends Phaser.Scene {
             let toCol = fromCol;
 
             switch (direction) {
-                case 'up': toRow -= 1; break;
-                case 'down': toRow += 1; break;
-                case 'left': toCol -= 1; break;
-                case 'right': toCol += 1; break;
+                case 'up':
+                    toRow -= 1;
+                    break;
+                case 'down':
+                    toRow += 1;
+                    break;
+                case 'left':
+                    toCol -= 1;
+                    break;
+                case 'right':
+                    toCol += 1;
+                    break;
             }
 
             if (toRow >= 0 && toRow < this.rows && toCol >= 0 && toCol < this.cols) {
-                const targetTile = this.diamonds[toRow][toCol];
-                this.swapTiles(gameObject, targetTile, true);
+                const targetTile = this.gridArray[toRow][toCol];
+                if (targetTile && targetTile.isMovable) {
+                    this.swapTiles(gameObject, targetTile, true);
+                } else {
+                    this.resetTilePosition(gameObject);
+                }
             } else {
                 this.resetTilePosition(gameObject);
             }
@@ -227,14 +387,26 @@ export default class GameScene extends Phaser.Scene {
         }
     }
 
+    /**
+     * swapTiles - Меняет местами два тайла и проверяет совпадения, если ход был игроком.
+     * @param {Object} tile1
+     * @param {Object} tile2
+     * @param {boolean} isPlayerAction - true, если игрок сам инициировал перемещение
+     */
     swapTiles(tile1, tile2, isPlayerAction) {
         this.isProcessing = true;
+
+        if (!tile1.isMovable || !tile2.isMovable) {
+            this.resetTilePosition(tile1);
+            this.isProcessing = false;
+            return;
+        }
 
         const tempRow = tile1.gridPosition.row;
         const tempCol = tile1.gridPosition.col;
 
-        this.diamonds[tile1.gridPosition.row][tile1.gridPosition.col] = tile2;
-        this.diamonds[tile2.gridPosition.row][tile2.gridPosition.col] = tile1;
+        this.gridArray[tile1.gridPosition.row][tile1.gridPosition.col] = tile2;
+        this.gridArray[tile2.gridPosition.row][tile2.gridPosition.col] = tile1;
 
         tile1.gridPosition.row = tile2.gridPosition.row;
         tile1.gridPosition.col = tile2.gridPosition.col;
@@ -252,12 +424,13 @@ export default class GameScene extends Phaser.Scene {
             duration: 200,
             onComplete: () => {
                 if (isPlayerAction) {
-                    if (!this.matchManager.checkMatches()) {
-                        // Обратный обмен, если нет совпадений
-                        this.swapTiles(tile1, tile2, false);
-                    } else {
-                        // Обрабатываем совпадения
+                    if (tile1 instanceof Bomb) {
+                        tile1.explode();
+                        this.isProcessing = false;
+                    } else if (this.matchManager.checkMatches()) {
                         this.matchManager.handleMatches();
+                    } else {
+                        this.swapTiles(tile1, tile2, false);
                     }
                 } else {
                     this.isProcessing = false;
@@ -266,6 +439,10 @@ export default class GameScene extends Phaser.Scene {
         });
     }
 
+    /**
+     * resetTilePosition - Возвращает тайл на исходную позицию, если ход не был успешным.
+     * @param {Object} tile
+     */
     resetTilePosition(tile) {
         this.tweens.add({
             targets: tile,
